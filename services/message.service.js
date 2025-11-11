@@ -1,12 +1,40 @@
 const repo = require('../repositories/message.repo');
 const { uploadToS3 } = require('../utils/s3');
 const chatService = require('../services/chat.service');
+const Message = require('../models/message.model');
+const mongoose = require('mongoose');
 
 
 exports.createMessage = async (data) => {
     try {
-        return await repo.createMessage(data);
+        // Convert string IDs to ObjectId if needed
+        const messageData = {
+            ...data,
+            ChatId: mongoose.Types.ObjectId.isValid(data.ChatId) 
+                ? new mongoose.Types.ObjectId(data.ChatId) 
+                : data.ChatId,
+            SenderId: mongoose.Types.ObjectId.isValid(data.SenderId) 
+                ? new mongoose.Types.ObjectId(data.SenderId) 
+                : data.SenderId,
+            ParentMessageId: data.ParentMessageId && mongoose.Types.ObjectId.isValid(data.ParentMessageId)
+                ? new mongoose.Types.ObjectId(data.ParentMessageId) 
+                : data.ParentMessageId || null
+        };
+        
+        const savedMessage = await repo.createMessage(messageData);
+        
+        // Update chat's LastMessage reference
+        try {
+            const chatRepo = require('../repositories/chat.repo');
+            await chatRepo.updateLastMessage(messageData.ChatId, savedMessage._id);
+        } catch (updateError) {
+            console.error('Error updating chat LastMessage:', updateError);
+            // Don't fail message creation if chat update fails
+        }
+        
+        return savedMessage;
     } catch (err) {
+        console.error('Error creating message:', err);
         throw new Error('Error creating message: ' + err.message);
     }
 };
@@ -38,36 +66,57 @@ exports.deleteMessagesByChatIds = async (chatIds) => {
 };
 
 exports.uploadMedia = async (file) => {
-    return await uploadToS3(file);
+    const key = await uploadToS3(file);
+    const { generatePresignedUrl } = require('../utils/s3');
+    
+    // Generate presigned URL for the uploaded file
+    const url = await generatePresignedUrl(key, 'inline');
+    
+    return {
+        key: key,
+        name: file.originalname,
+        url: url,
+        size: file.size,
+        mimetype: file.mimetype
+    };
 }
 
 /**
  * Get paginated messages (cursor-based, with parent message populated)
  */
 exports.getMessagesForChat = async (chatId, userId, before, limit = 20) => {
-  // 1️⃣ Validate chat access
-  const chat = await chatService.getChatByChatId(chatId);
-  if (!chat) {
-    const err = new Error('Chat not found');
-    err.statusCode = 404;
-    throw err;
-  }
+  try {
+    // 1️⃣ Validate chat access (if chat exists)
+    const chat = await chatService.getChatByChatId(chatId);
+    
+    if (chat) {
+      // Verify user is a participant
+      const isParticipant = chat.Participants?.some(
+        (p) => p?.toString() === userId.toString()
+      );
+      if (!isParticipant) {
+        const err = new Error('Access denied — not a participant of this chat');
+        err.statusCode = 403;
+        throw err;
+      }
+    } else {
+      // Chat doesn't exist, but check if messages exist (chat might have been deleted)
+      console.warn(`Chat ${chatId} not found, but checking for messages...`);
+      // We'll still try to fetch messages - they might exist even if chat was deleted
+    }
 
-  const isParticipant = chat.Participants.some(
-    (p) => p.toString() === userId.toString()
-  );
-  if (!isParticipant) {
-    const err = new Error('Access denied — not a participant of this chat');
-    err.statusCode = 403;
-    throw err;
-  }
+    // 2️⃣ Fetch messages (with parent populated)
+    const messages = await repo.getMessagesBefore(chatId, before, limit);
 
-  // 2️⃣ Fetch messages (with parent populated)
-  const messages = await repo.getMessagesBefore(chatId, before, limit);
-
-  if (!messages.length) {
-    return { ChatId: chatId, Data: [] };
-  }
+    if (!messages.length) {
+      // If no messages and no chat, return 404
+      if (!chat) {
+        const err = new Error('Chat not found');
+        err.statusCode = 404;
+        throw err;
+      }
+      return { ChatId: chatId, Data: [], Limit: limit, NextCursor: null };
+    }
 
   // 3️⃣ Format messages for frontend
   const formatted = messages
@@ -102,13 +151,24 @@ exports.getMessagesForChat = async (chatId, userId, before, limit = 20) => {
     }))
     .reverse(); // oldest → newest for UI
 
-  return {
-    ChatId: chatId,
-    Limit: limit,
-    Data: formatted,
-    NextCursor:
-      messages.length > 0 ? messages[messages.length - 1].Timestamp : null,
-  };
+    return {
+      ChatId: chatId,
+      Limit: limit,
+      Data: formatted,
+      NextCursor:
+        messages.length > 0 ? messages[messages.length - 1].Timestamp : null,
+    };
+  } catch (error) {
+    // Re-throw if it's already a formatted error with statusCode
+    if (error.statusCode) {
+      throw error;
+    }
+    // Otherwise, log and throw generic error
+    console.error(`Error in getMessagesForChat for chat ${chatId}:`, error);
+    const err = new Error(error.message || 'Failed to fetch messages');
+    err.statusCode = 500;
+    throw err;
+  }
 };
 
 

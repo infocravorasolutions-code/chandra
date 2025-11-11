@@ -5,6 +5,6 @@ exports.getCodelistByName = async (name) => {
         return await repo.getCodelistByName(name);
     } catch (error) {
         console.error("Error fetching codelist by name:", error);
-        res.status(500).json({ message: "Internal server error", error: error.message });
+        throw error; // Re-throw the error instead of trying to use undefined 'res'
     }
 };

@@ -2,7 +2,9 @@ const service = require('../services/enquiry.service');
 
 exports.getEnquiries = async (req, res) => {
     try {
-        const enquiries = await service.getEnquiries();
+        const userRole = req.user.role;
+        const userClientId = req.user.clientId;
+        const enquiries = await service.getEnquiries(userRole, userClientId);
         res.json(enquiries);
     } catch (error) {
         console.error("Error fetching enquiries:", error);

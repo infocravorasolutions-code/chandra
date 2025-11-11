@@ -1,6 +1,7 @@
 const repo = require('../repositories/chat.repo');
 const Message = require('../models/message.model');
 const messageService = require('../services/message.service');
+const mongoose = require('mongoose');
 
 /**
  * Creates a single chat if not already existing.
@@ -13,6 +14,17 @@ const messageService = require('../services/message.service');
  */
 exports.createChat = async (EnquiryId, EnquiryName, Type, Participants) => {
   try {
+    // Validate required fields
+    if (!EnquiryId) {
+      throw new Error('EnquiryId is required to create chat');
+    }
+    if (!EnquiryName) {
+      throw new Error('EnquiryName is required to create chat');
+    }
+    if (!Type || (Type !== 'admin-client' && Type !== 'admin-designer')) {
+      throw new Error('Type must be either "admin-client" or "admin-designer"');
+    }
+
     // Check for existing chat
     const existingChat = await repo.findChatByEnquiryAndType(EnquiryId, Type);
     if (existingChat) {
@@ -25,12 +37,32 @@ exports.createChat = async (EnquiryId, EnquiryName, Type, Participants) => {
       EnquiryId,
       EnquiryName,
       Type,
-      Participants,
+      Participants: Participants || [],
     });
 
     console.log(`Created chat for Enquiry ${EnquiryId} (${Type})`);
     return chat;
   } catch (error) {
+    // Handle duplicate key error - might be from invalid null values in DB
+    if (error.code === 11000 && error.keyPattern && error.keyValue) {
+      // MongoDB error uses lowercase field names in keyValue
+      const keyValue = error.keyValue || {};
+      const enquiryIdValue = keyValue.enquiryId || keyValue.EnquiryId;
+      const typeValue = keyValue.type || keyValue.Type;
+      
+      if (enquiryIdValue === null || typeValue === null) {
+        console.error(`⚠️ Duplicate key error with null values detected. This indicates corrupted data in database.`);
+        console.error(`   Attempting to clean up invalid chat documents...`);
+        // Try to delete invalid chats
+        try {
+          await repo.deleteInvalidChats();
+          console.log(`✅ Cleaned up invalid chats. Please retry creating the enquiry.`);
+        } catch (cleanupError) {
+          console.error(`❌ Failed to cleanup invalid chats:`, cleanupError);
+        }
+        throw new Error('Database contains invalid chat data. Please contact administrator to clean up chats with null EnquiryId or Type.');
+      }
+    }
     console.error(`Error creating chat for Enquiry ${EnquiryId} (${Type}):`, error);
     throw error;
   }
@@ -74,64 +106,112 @@ exports.addParticipantIfMissing = async (EnquiryId, Type, UserId) => {
  * Get paginated chats for a user (aggregation-based).
  *
  * @param {ObjectId} userId - Logged-in user
+ * @param {Number} userRole - User's role (1=Admin, 2=Coral, 3=Cad, 4=Client)
+ * @param {String} userClientId - User's clientId (null for non-clients)
  * @param {Number} page - Page number (1-based)
  * @param {Number} limit - Items per page
  * @param {String} search - Optional search term
+ * @param {String} chatType - Optional chat type filter ('admin-client' or 'admin-designer')
+ * @param {String} enquiryId - Optional enquiry ID to filter chats by specific enquiry
  */
-exports.getChatsForUser = async (userId, page = 1, limit = 10, search = '') => {
-  const { total, data } = await repo.getChatsForUserAgg(userId, page, limit, search);
+exports.getChatsForUser = async (userId, userRole, userClientId, page = 1, limit = 10, search = '', chatType = null, enquiryId = null) => {
+  try {
+    const { total, data } = await repo.getChatsForUserAgg(userId, userRole, userClientId, page, limit, search, chatType, enquiryId);
 
-  // Format chats for frontend
-  const formatted = await Promise.all(
-    data.map(async (chat) => {
-      // Get last read entry
-      const lastReadEntry = chat.LastRead?.find(
-        (r) => r.UserId?.toString() === userId.toString()
-      );
-      const lastReadAt = lastReadEntry?.LastReadAt || new Date(0);
+    // Format chats for frontend
+    const formatted = await Promise.all(
+      (data || []).map(async (chat) => {
+        try {
+          // Get last read entry
+          const lastReadEntry = chat.LastRead?.find(
+            (r) => r?.UserId?.toString() === userId.toString()
+          );
+          const lastReadAt = lastReadEntry?.LastReadAt || new Date(0);
 
-      // Compute unread message count TODO service calling model
-      const unreadCount = await Message.countDocuments({
-        ChatId: chat._id,
-        Timestamp: { $gt: lastReadAt },
-        SenderId: { $ne: userId },
-      });
+          // Compute unread message count TODO service calling model
+          // Convert to ObjectId to ensure proper query
+          const chatObjectId = mongoose.Types.ObjectId.isValid(chat._id) 
+            ? new mongoose.Types.ObjectId(chat._id) 
+            : chat._id;
+          const userObjectId = mongoose.Types.ObjectId.isValid(userId) 
+            ? new mongoose.Types.ObjectId(userId) 
+            : userId;
+          
+          let unreadCount = 0;
+          try {
+            unreadCount = await Message.countDocuments({
+              ChatId: chatObjectId,
+              Timestamp: { $gt: lastReadAt },
+              SenderId: { $ne: userObjectId },
+            });
+          } catch (countError) {
+            console.error(`Error counting unread messages for chat ${chat._id}:`, countError);
+            unreadCount = 0;
+          }
 
-      // Prepare last message preview
-      const lm = chat.LastMessage;
-      const messageText = lm
-        ? lm.MessageType === 'text'
-          ? lm.Message
-          : lm.MessageType === 'image'
-          ? '📷 Photo'
-          : lm.MessageType === 'video'
-          ? '🎥 Video'
-          : '📎 Attachment'
-        : '(no messages yet)';
+          // Prepare last message preview
+          const lm = chat.LastMessage;
+          const messageText = lm
+            ? lm.MessageType === 'text'
+              ? lm.Message
+              : lm.MessageType === 'image'
+              ? '📷 Photo'
+              : lm.MessageType === 'video'
+              ? '🎥 Video'
+              : '📎 Attachment'
+            : '(no messages yet)';
 
-      return {
-        _id: chat._id,
-        EnquiryId: chat.EnquiryId,
-        EnquiryName: chat.EnquiryName,
-        Type: chat.Type,
-        LastMessage: {
-          Text: messageText,
-          Timestamp: lm?.Timestamp || chat.UpdatedAt,
-          Sender: lm?.Sender?.Name || null,
-        },
-        UnreadCount: unreadCount,
-        UpdatedAt: chat.UpdatedAt,
-      };
-    })
-  );
+          return {
+            _id: chat._id,
+            EnquiryId: chat.EnquiryId,
+            EnquiryName: chat.EnquiryName,
+            Type: chat.Type,
+            LastMessage: {
+              Text: messageText,
+              Timestamp: lm?.Timestamp || chat.UpdatedAt,
+              Sender: lm?.Sender?.Name || null,
+            },
+            UnreadCount: unreadCount,
+            UpdatedAt: chat.UpdatedAt,
+          };
+        } catch (chatError) {
+          console.error(`Error formatting chat ${chat._id}:`, chatError);
+          // Return a minimal chat object to prevent crash
+          return {
+            _id: chat._id,
+            EnquiryId: chat.EnquiryId,
+            EnquiryName: chat.EnquiryName || 'Unknown',
+            Type: chat.Type,
+            LastMessage: {
+              Text: '(no messages yet)',
+              Timestamp: chat.UpdatedAt || new Date(),
+              Sender: null,
+            },
+            UnreadCount: 0,
+            UpdatedAt: chat.UpdatedAt || new Date(),
+          };
+        }
+      })
+    );
 
-  return {
-    Total: total,
-    page,
-    limit,
-    TotalPages: Math.ceil(total / limit),
-    Data: formatted,
-  };
+    return {
+      Total: total || 0,
+      page,
+      limit,
+      TotalPages: Math.ceil((total || 0) / limit),
+      Data: formatted,
+    };
+  } catch (error) {
+    console.error('Error in getChatsForUser:', error);
+    // Return empty result instead of crashing
+    return {
+      Total: 0,
+      page,
+      limit,
+      TotalPages: 0,
+      Data: [],
+    };
+  }
 };
 
 exports.getChatByChatId = async (chatId) => {

@@ -10,5 +10,5 @@ router.post('/upload',
     chatUpload,
     controller.uploadMedia);
 
-router.get(':chatId/messages', authenticateToken, controller.getChatMessages);
+router.get('/:chatId/messages', authenticateToken, controller.getChatMessages);
 module.exports = router;

@@ -9,8 +9,20 @@ const xlsx = require('xlsx');
 const pushService = require('../services/pushNotification.service');
 const codelistsService = require('../services/codelists.service');
 
-// Get all enquiries
-exports.getEnquiries = async () => {
+let frontendUrl = process.env.NODE_ENV === 'production' ? 'https://workflow-ui-virid.vercel.app' : 'http://localhost:4200';
+
+// Get all enquiries (with role-based filtering)
+exports.getEnquiries = async (userRole = null, userClientId = null) => {
+    // Role constants
+    const ROLE_ADMIN = 1;
+    const ROLE_CLIENT = 4;
+    
+    // If user is a client, only return their enquiries
+    if (userRole === ROLE_CLIENT && userClientId) {
+        return await repo.getEnquiriesByClientId(userClientId);
+    }
+    
+    // For admin and other roles, return all enquiries
     return await repo.getAllEnquiries();
 };
 
@@ -56,13 +68,29 @@ exports.createEnquiry = async (data, userId) => {
 
     const enquiry = await repo.createEnquiry(enquiryData);
 
+    // Validate enquiry was created successfully
+    if (!enquiry || !enquiry._id) {
+      throw new Error('Failed to create enquiry - enquiry ID is missing');
+    }
+    if (!enquiry.Name) {
+      throw new Error('Failed to create enquiry - enquiry Name is missing');
+    }
+
     const adminRoleId = (await codelistsService.getCodelistByName("Roles"))?.find(role => role.Code === "AD")?.Id;
-    const adminIds = await userService.getUsersByRole(adminRoleId);
-    const clientIds = await userService.getUsersByClient(enquiry.ClientId);
+    if (!adminRoleId) {
+      console.warn('⚠️ Admin role ID not found in codelist, skipping admin addition to chats');
+    }
+    const adminIds = adminRoleId ? await userService.getUsersByRole(adminRoleId) : [];
+    const clientIds = enquiry.ClientId ? await userService.getUsersByClient(enquiry.ClientId) : [];
     const designerId = AssignedTo || null;
 
-    await chatService.createChat(enquiry._id, enquiry.Name, 'admin-client', [...adminIds, ...clientIds]);
-    await chatService.createChat(enquiry._id, enquiry.Name, 'admin-designer', designerId ? [...adminIds, designerId] : [...adminIds]);
+    // Only create chats if we have valid enquiry data
+    if (enquiry._id && enquiry.Name) {
+      await chatService.createChat(enquiry._id, enquiry.Name, 'admin-client', [...adminIds, ...clientIds]);
+      await chatService.createChat(enquiry._id, enquiry.Name, 'admin-designer', designerId ? [...adminIds, designerId] : [...adminIds]);
+    } else {
+      throw new Error('Cannot create chats: Enquiry ID or Name is missing');
+    }
 
     // 5️⃣ 🔔 Send notifications
     try {

@@ -14,10 +14,16 @@ exports.createMessage = async (message) => {
 
 /**
  * Fetch all messages for a specific ChatId, sorted by Timestamp ascending.
- * @param {ObjectId} chatId - The chat whose messages to fetch.
+ * @param {ObjectId|String} chatId - The chat whose messages to fetch.
  */
 exports.getMessagesByChatId = async (chatId) => {
-  return await Message.find({ ChatId: chatId })
+  const mongoose = require('mongoose');
+  // Convert chatId to ObjectId if needed
+  const chatObjectId = mongoose.Types.ObjectId.isValid(chatId) 
+    ? new mongoose.Types.ObjectId(chatId) 
+    : chatId;
+  
+  return await Message.find({ ChatId: chatObjectId })
     .sort({ Timestamp: 1 })
     .lean();
 };
@@ -28,8 +34,17 @@ exports.getMessagesByChatId = async (chatId) => {
  */
 exports.getMessagesBefore = async (chatId, before, limit = 20) => {
   try {
-    const query = { ChatId: chatId };
-    if (before) query.Timestamp = { $lt: before };
+    const mongoose = require('mongoose');
+    // Convert chatId to ObjectId if needed
+    const chatObjectId = mongoose.Types.ObjectId.isValid(chatId) 
+      ? new mongoose.Types.ObjectId(chatId) 
+      : chatId;
+    
+    const query = { ChatId: chatObjectId };
+    if (before) {
+      const beforeDate = before instanceof Date ? before : new Date(before);
+      query.Timestamp = { $lt: beforeDate };
+    }
 
     return await Message.find(query)
       .sort({ Timestamp: -1 }) // newest first for efficient cursor pagination
@@ -47,15 +62,27 @@ exports.getMessagesBefore = async (chatId, before, limit = 20) => {
 
 /**
  * Marks all messages in a chat as read by a given user.
- * @param {ObjectId} chatId
- * @param {ObjectId} userId
+ * @param {ObjectId|String} chatId
+ * @param {Array<ObjectId|String>} userIds
  */
 exports.markMessagesAsRead = async (chatId, userIds) => {
   if (!Array.isArray(userIds)) userIds = [userIds];
+  
+  const mongoose = require('mongoose');
+  // Convert to ObjectId if needed
+  const chatObjectId = mongoose.Types.ObjectId.isValid(chatId) 
+    ? new mongoose.Types.ObjectId(chatId) 
+    : chatId;
+  
+  const userObjectIds = userIds.map(userId => 
+    mongoose.Types.ObjectId.isValid(userId) 
+      ? new mongoose.Types.ObjectId(userId) 
+      : userId
+  );
 
   return Message.updateMany(
-    { ChatId: chatId, ReadBy: { $nin: userIds } },
-    { $addToSet: { ReadBy: { $each: userIds } } }
+    { ChatId: chatObjectId, ReadBy: { $nin: userObjectIds } },
+    { $addToSet: { ReadBy: { $each: userObjectIds } } }
   );
 };
 
