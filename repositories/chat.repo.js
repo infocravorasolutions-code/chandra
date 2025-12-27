@@ -226,9 +226,6 @@ exports.findChatsByEnquiryId = async (enquiryId,user) => {
   return Chat.find({ EnquiryId: enquiryId,Participants:{$in:[user._id]}})
     .populate({
       path: 'LastMessage',
-      populate: {
-        path: 'SenderId',
-      }
     })
     .lean();
 };
