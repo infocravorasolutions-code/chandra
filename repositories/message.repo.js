@@ -110,10 +110,12 @@ exports.getMessagesBefore = async (chatId, before, limit = 20) => {
  * @param {ObjectId} chatId
  * @param {Array<ObjectId>|ObjectId} userIds - Single user ID or array of user IDs
  */
-exports.markMessagesAsRead = async (chatId, userIds) => {
+exports.markMessagesAsRead = async (chatId, userIds, messageIds = null) => {
   if (!Array.isArray(userIds)) userIds = [userIds];
 
   const readAt = new Date();
+  const hasSpecificMessages = Array.isArray(messageIds) && messageIds.length > 0;
+  const messageFilter = hasSpecificMessages ? { _id: { $in: messageIds } } : {};
 
   // For each userId, update messages that don't already have this user in ReadBy
   // or update the readAt timestamp if they do
@@ -122,6 +124,7 @@ exports.markMessagesAsRead = async (chatId, userIds) => {
     await Message.updateMany(
       { 
         ChatId: chatId,
+        ...messageFilter,
         'ReadBy.userId': { $ne: userId }
       },
       {
@@ -138,6 +141,7 @@ exports.markMessagesAsRead = async (chatId, userIds) => {
     await Message.updateMany(
       {
         ChatId: chatId,
+        ...messageFilter,
         'ReadBy.userId': userId
       },
       {

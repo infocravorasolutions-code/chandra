@@ -161,7 +161,7 @@ exports.getMessagesForChat = async (chatId, userId, before, limit = 20) => {
 /**
  * Mark messages as read manually (for socket event or UI action).
  */
-exports.markMessagesAsRead = async (chatId, userIds) => {
-  return await repo.markMessagesAsRead(chatId, userIds);
+exports.markMessagesAsRead = async (chatId, userIds, messageIds = null) => {
+  return await repo.markMessagesAsRead(chatId, userIds, messageIds);
 };
 

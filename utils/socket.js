@@ -87,12 +87,6 @@ function initSocket(server) {
                 socket.data.userId = userId;
                 socket.data.chatId = chatId;
 
-                await chatService.markChatAsRead(chatId, [userId]);
-                await messageService.markMessagesAsRead(chatId, [userId]);
-
-                // ✅ Notify others in the chat (for read ticks)
-                io.to(`chat_${chatId}`).emit('messagesRead', { chatId, userIds: [userId] });
-
                 console.log(`🟢 ${userId} joined room chat_${chatId}`);
             } catch (err) {
                 console.error('Error joining chat room:', err);
@@ -167,12 +161,18 @@ function initSocket(server) {
                     return;
                 }
 
+                // Chat channel type (already loaded — no extra query) for list UIs that filter admin-client vs admin-designer
+                const chatChannelType = chat.Type != null ? String(chat.Type) : undefined;
+
                 // 3️⃣ Format message data with required fields for frontend
                 const messageData = {
                     _id: savedMessage._id.toString(),
                     id: savedMessage._id.toString(),
                     ChatId: chatId.toString(),
                     EnquiryId: chat.EnquiryId?.toString() || null, // REQUIRED for frontend
+                    EnquiryName: chat.EnquiryName || undefined,
+                    Type: chatChannelType,
+                    ChatType: chatChannelType,
                     SenderId: userId.toString(),
                     Message: savedMessage.Message || '',
                     MessageType: savedMessage.MessageType || 'text',
@@ -420,9 +420,10 @@ function initSocket(server) {
                     return;
                 }
 
-                // 1️⃣ Mark messages as read in database
+                // 1️⃣ Mark messages as read in database.
+                // If specific messageIds are provided, only mark those as read.
                 await chatService.markChatAsRead(chatId, [userId]);
-                await messageService.markMessagesAsRead(chatId, [userId]);
+                await messageService.markMessagesAsRead(chatId, [userId], messageIds);
 
                 // 2️⃣ Recalculate unread count for this user
                 const unreadCount = await getUnreadCount(chatId, userId);
