@@ -7,38 +7,27 @@ If you need file names and technical detail, see **“Technical reference”** a
 
 ## In plain words
 
-We fixed two things so chat behaves more like people expect (similar to apps such as WhatsApp):
+We adjusted two areas so chat read/unread stays predictable:
 
-1. **Opening a chat no longer means “I’ve read everything.”**  
-   Unread counts should only go down when we actually mark messages as read—not the moment you enter the conversation.
+1. **When you join a chat room (`joinChat`), the server again marks existing messages as read for that user** (same as the older behaviour).  
+   Unread for that chat is cleared when you connect for live updates in that thread.
 
-2. **When the app says “these specific messages were read,” the server now listens.**  
-   Before, the server always treated it as “mark the whole chat as read,” which wasn’t always correct.
+2. **When the app says “these specific messages were read,” the server respects a message list when provided.**  
+   Partial read stays available via `markMessagesRead` + `messageIds`.
 
 ---
 
-## Change 1 — Opening a chat does not clear unread anymore
+## Change 1 — Joining a chat marks existing messages read (restored)
 
-### What you might have seen before
+### Behaviour
 
-- You open a chat, but you haven’t really read all the messages yet.
-- The **unread badge** or count still dropped to **zero** too early.
-- That felt wrong because you hadn’t actually read everything.
+- When a user **joins** the chat socket room (`joinChat`), the server marks **all messages in that chat** as read for that user (if they are a **participant**).
+- Chat **last read** timestamps are updated, and **`messagesRead`** is emitted (personal room + chat room) so the app can refresh badges.
 
-### Why that happened
+### Note
 
-The server used to say: *“This person joined the chat room → mark every message as read for them.”*  
-Joining the chat is really just *connecting for live updates*—it’s not the same as *I’ve read up to here*.
-
-### What we do now
-
-- **Joining** a chat only connects you for real-time updates.
-- Messages are marked as read only when the app **explicitly** asks the server to do that (after you’ve actually viewed messages).
-
-### What this means for you
-
-- Unread numbers should **match reality** better.
-- The app controls **when** “read” happens, not the act of simply opening the thread.
+- This matches the **previous** “open thread = clear unread for that chat” product choice.
+- **Partial** read is still done via **`markMessagesRead`** with optional **`messageIds`**.
 
 ---
 
@@ -62,10 +51,11 @@ Joining the chat is really just *connecting for live updates*—it’s not the s
 
 ## Quick comparison
 
-| Situation | Before | After |
-|-----------|--------|--------|
-| User opens a chat | Often everything marked read immediately | Only connecting for live updates; read when app says so |
-| App says “these messages were read” | Whole chat marked read | Those messages (or whole chat if no list sent) |
+| Situation | Behaviour |
+|-----------|-----------|
+| User joins chat (`joinChat`) | All messages in that chat marked read for that user (participant only) |
+| App sends `markMessagesRead` with `messageIds` | Only those messages updated |
+| App sends `markMessagesRead` without `messageIds` | Whole chat marked read for that user |
 
 ---
 
@@ -81,13 +71,13 @@ Joining the chat is really just *connecting for live updates*—it’s not the s
 
 | Topic | Detail |
 |--------|--------|
-| Join chat | `joinChat` in `utils/socket.js` — removed automatic `markChatAsRead` / `markMessagesAsRead` and the related `messagesRead` emit on join |
+| Join chat | `joinChat` in `utils/socket.js` — after join, if user is a participant: `markChatAsRead`, `markMessagesAsRead` (no `messageIds` = all messages), then `messagesRead` emit |
 | Mark read | `markMessagesRead` in `utils/socket.js` passes `messageIds` into `messageService.markMessagesAsRead` → `repositories/message.repo.js` |
 | `messageIds` | Non-empty array → update `ReadBy` only for those message `_id`s in that chat; missing/empty → same “all applicable messages” behaviour as legacy |
 
 **Integrator notes**
 
-- After `joinChat`, the app should call **`markMessagesRead`** when the user has actually read messages.
+- **`joinChat`** already marks the whole chat read for the joining user; use **`markMessagesRead`** when you need **partial** read or to sync after viewing without re-joining.
 - Optional: send **`messageIds`** for partial read; omit for full-chat style mark-read.
 - Server still emits **`messagesRead`** with `chatId`, `userId`, `unreadCount` for the user who read, so clients can refresh UI.
 

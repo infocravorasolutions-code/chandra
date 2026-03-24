@@ -88,6 +88,35 @@ function initSocket(server) {
                 socket.data.chatId = chatId;
 
                 console.log(`🟢 ${userId} joined room chat_${chatId}`);
+
+                // On join: mark all existing messages in this chat as read for this user (legacy behaviour).
+                const readerId = socket.userId || userId;
+                if (chatId && readerId) {
+                    try {
+                        const chat = await chatService.getChatByChatId(chatId);
+                        const isParticipant =
+                            chat &&
+                            Array.isArray(chat.Participants) &&
+                            chat.Participants.some((p) => String(p) === String(readerId));
+                        if (isParticipant) {
+                            await chatService.markChatAsRead(chatId, [readerId]);
+                            await messageService.markMessagesAsRead(chatId, [readerId]);
+                            const unreadCount = await getUnreadCount(chatId, readerId);
+                            io.to(`user:${readerId}`).emit('messagesRead', {
+                                chatId: chatId.toString(),
+                                userId: readerId.toString(),
+                                unreadCount
+                            });
+                            io.to(`chat_${chatId}`).emit('messagesRead', {
+                                chatId: chatId.toString(),
+                                userIds: [readerId.toString()],
+                                unreadCount
+                            });
+                        }
+                    } catch (readErr) {
+                        console.error('joinChat mark-as-read error:', readErr);
+                    }
+                }
             } catch (err) {
                 console.error('Error joining chat room:', err);
             }
