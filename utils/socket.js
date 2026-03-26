@@ -233,20 +233,33 @@ function initSocket(server) {
                 
                 console.log(`📤 Emitted newMessage to ${participants.length} participants via personal rooms`);
 
-                // 3️⃣ Identify currently active users in this chat
-                const connectedSockets = await io.in(`chat_${chatId}`).fetchSockets();
-                const activeUserIds = connectedSockets.map((s) => s.data.userId);
-                const readers = activeUserIds.filter((id) => id !== userId);
+                // ──────────────────────────────────────────────────────────────
+                // OPTIMISED: Auto-mark-read + per-user unread recount removed.
+                //
+                // Why: Each message was triggering markChatAsRead, markMessagesAsRead,
+                //      fetchSockets, and N × getUnreadCount DB queries for active readers.
+                //      This was the heaviest block per message.
+                //
+                // How unread works now:
+                //   • Frontend increments unread locally on newMessage (chatListRealtimeCache.js)
+                //   • Frontend resets unread on messagesRead event (joinChat + markMessagesRead)
+                //   • Pull-to-refresh / GET /api/chats returns authoritative backend count
+                //   • joinChat already marks all messages read for the joining user
+                //
+                // To restore: uncomment the block below.
+                // ──────────────────────────────────────────────────────────────
 
-                // 6️⃣ Mark message as read for all active users (except sender)
+                /*
+                const connectedSocketsForRead = await io.in(`chat_${chatId}`).fetchSockets();
+                const activeUserIdsForRead = connectedSocketsForRead.map((s) => s.data.userId);
+                const readers = activeUserIdsForRead.filter((id) => id !== userId);
+
                 if (readers.length > 0) {
                     await chatService.markChatAsRead(chatId, readers);
                     await messageService.markMessagesAsRead(chatId, readers);
 
-                    // Calculate unread counts for each reader and emit to their personal rooms
                     const unreadCountPromises = readers.map(async (readerId) => {
                         const unreadCount = await getUnreadCount(chatId, readerId);
-                        // Emit to personal room for chat list updates
                         io.to(`user:${readerId}`).emit('messagesRead', {
                             chatId: chatId.toString(),
                             userId: readerId.toString(),
@@ -256,7 +269,6 @@ function initSocket(server) {
                     });
                     await Promise.all(unreadCountPromises);
 
-                    // Also notify everyone in the chat room (for read receipts/ticks)
                     io.to(`chat_${chatId}`).emit('messagesRead', {
                         chatId: chatId.toString(),
                         userIds: readers.map(id => id.toString())
@@ -264,13 +276,16 @@ function initSocket(server) {
 
                     console.log(`👀 Active readers in chat ${chatId}:`, readers);
                 }
+                */
 
-                // 6️⃣ Recipients = all except sender (for offline notifications)
+                // Recipients = all except sender (for offline notifications)
                 const recipients = participants.filter(
                     (p) => p.toString() !== userId.toString()
                 );
 
-                // Determine offline users = participants not in active socket list
+                // Determine offline users — fetchSockets needed only for push notification targeting
+                const connectedSockets = await io.in(`chat_${chatId}`).fetchSockets();
+                const activeUserIds = connectedSockets.map((s) => s.data.userId);
                 const offlineUserIds = recipients.filter(
                     (id) => !activeUserIds.includes(id.toString())
                 );
